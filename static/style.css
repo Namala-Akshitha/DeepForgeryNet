@@ -1,0 +1,19 @@
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+  font-family:system-ui,Segoe UI,Roboto,sans-serif;background:#eaf2fc;color:#1b2a41}
+.card{background:#fff;width:min(460px,92vw);padding:32px;border-radius:16px;
+  box-shadow:0 8px 30px rgba(0,60,140,.12);text-align:center}
+h1{margin:0;color:#0070c0}
+.sub{color:#51627a;margin:6px 0 20px}
+.drop{display:flex;align-items:center;justify-content:center;min-height:220px;border:2px dashed #7fb0e6;
+  border-radius:12px;background:#f5f9ff;cursor:pointer;overflow:hidden;padding:8px}
+.drop.over{background:#dcecff}
+.drop img{max-width:100%;max-height:260px;border-radius:8px}
+#hint{color:#51627a}
+button{margin-top:18px;width:100%;padding:12px;font-size:1rem;border:0;border-radius:10px;
+  background:#0070c0;color:#fff;cursor:pointer}
+button:disabled{background:#a9c7e6;cursor:not-allowed}
+.result{margin-top:18px;padding:16px;border-radius:10px;font-size:1.4rem;font-weight:700}
+.result.real{background:#e3f6e8;color:#1b7a3a}
+.result.fake{background:#fde6e6;color:#b42323}
+.result.err{background:#fff3d6;color:#8a5a00;font-size:1rem;font-weight:500}

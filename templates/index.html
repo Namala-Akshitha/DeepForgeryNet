@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DeepForgeryNet – Real or Fake?</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="card">
+    <h1>DeepForgeryNet</h1>
+    <p class="sub">Upload an image to check whether it is <b>real</b> or <b>fake</b>.</p>
+
+    <label id="drop" class="drop">
+      <input type="file" id="file" accept="image/*" hidden>
+      <img id="preview" alt="" hidden>
+      <span id="hint">Click or drag &amp; drop an image here</span>
+    </label>
+
+    <button id="go" disabled>Check image</button>
+    <div id="result" class="result" hidden></div>
+  </main>
+  <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
