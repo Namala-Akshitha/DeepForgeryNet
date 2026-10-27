@@ -1,69 +1,110 @@
-"""Evaluate the trained model on a test folder and write REAL metrics to results/.
+"""Evaluate on the held-out test set. The decision threshold is tuned on the
+VALIDATION set only (never on test), then applied to test.
 
-    python evaluate.py                           # data/test
-    python evaluate.py --test-dir data_celebdf/test --name celebdf   # cross-dataset
+    python evaluate.py --out outputs
 """
 import argparse
 import json
 import os
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
+import tensorflow as tf
 from sklearn.metrics import (accuracy_score, confusion_matrix, f1_score, precision_score,
                              recall_score, roc_auc_score, roc_curve)
-from tensorflow.keras.models import load_model
 
-from config import MODEL_PATH, RESULTS_DIR, THRESHOLD
-from src.data import ImageSequence, list_split
+import config
+import data
+import infer
+
+
+def metrics(y, p, thr):
+    yh = (p >= thr).astype(int)
+    return {
+        "threshold": float(thr),
+        "accuracy": accuracy_score(y, yh),
+        "precision": precision_score(y, yh, zero_division=0),
+        "recall": recall_score(y, yh),
+        "f1": f1_score(y, yh),
+        "auc": roc_auc_score(y, p),
+        "confusion_matrix": confusion_matrix(y, yh).tolist(),
+    }
+
+
+def tune_threshold(y, p, criterion):
+    best, best_t = -1, 0.5
+    for t in np.linspace(0.05, 0.95, 91):
+        yh = (p >= t).astype(int)
+        if criterion == "f1":
+            s = f1_score(y, yh)
+        elif criterion == "accuracy":
+            s = accuracy_score(y, yh)
+        else:  # youden = balanced accuracy
+            s = recall_score(y, yh) + recall_score(1 - y, 1 - yh) - 1
+        if s > best:
+            best, best_t = s, t
+    return float(best_t)
+
+
+def score(model, paths, mode, cache, tta):
+    out = []
+    for i, p in enumerate(paths):
+        kw = {} if tta else {"max_crops": 1, "flips": False}
+        out.append(infer.predict_path(model, p, mode, cache, **kw))
+        if (i + 1) % 200 == 0:
+            print(f"  scored {i + 1}/{len(paths)}")
+    return np.array(out)
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--test-dir", default="data/test")
-    ap.add_argument("--name", default="test")
-    ap.add_argument("--batch-size", type=int, default=16)
+    ap.add_argument("--out", default="outputs")
+    ap.add_argument("--criterion", default="youden", choices=["youden", "f1", "accuracy"])
+    ap.add_argument("--no_tta", action="store_true")
     a = ap.parse_args()
 
-    paths, labels = list_split(a.test_dir)
-    seq = ImageSequence(paths, labels, a.batch_size)
-    model = load_model(MODEL_PATH)
+    mode = open(os.path.join(a.out, "mode.txt")).read().strip()
+    cache = os.path.join(a.out, "cache")
+    model = tf.keras.models.load_model(os.path.join(a.out, "model.keras"))
+    sp = data.load_splits(os.path.join(a.out, "splits.json"))
 
-    probs = model.predict(seq, verbose=1).ravel()
-    y_true = np.array(labels)[: len(probs)]
-    y_pred = (probs >= THRESHOLD).astype(int)
+    print("Scoring validation set ...")
+    pv = score(model, sp["val"][0], mode, cache, not a.no_tta)
+    thr = tune_threshold(sp["val"][1], pv, a.criterion)
+    print(f"Threshold tuned on validation ({a.criterion}): {thr:.2f}")
 
-    m = {
-        "dataset": a.name,
-        "num_images": int(len(y_true)),
-        "accuracy": float(accuracy_score(y_true, y_pred)),
-        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
-        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
-        "f1_score": float(f1_score(y_true, y_pred, zero_division=0)),
-        "auc": float(roc_auc_score(y_true, probs)),
-        "confusion_matrix [[TN, FP], [FN, TP]]": confusion_matrix(y_true, y_pred).tolist(),
-    }
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-    with open(os.path.join(RESULTS_DIR, f"metrics_{a.name}.json"), "w") as f:
-        json.dump(m, f, indent=2)
+    print("Scoring test set ...")
+    yt = sp["test"][1]
+    pt = score(model, sp["test"][0], mode, cache, not a.no_tta)
 
-    cm = confusion_matrix(y_true, y_pred)
-    plt.figure(figsize=(4, 4)); plt.imshow(cm, cmap="Blues")
-    for i in range(2):
-        for j in range(2):
-            plt.text(j, i, cm[i, j], ha="center", va="center")
+    res = {"at_0.5": metrics(yt, pt, 0.5), "at_tuned_threshold": metrics(yt, pt, thr),
+           "tta": not a.no_tta, "mode": mode, "n_test": int(len(yt))}
+    with open(os.path.join(a.out, "results.json"), "w") as f:
+        json.dump(res, f, indent=2)
+    with open(os.path.join(a.out, "threshold.json"), "w") as f:
+        json.dump({"threshold": thr, "mode": mode}, f)
+
+    print("\n| Setting | Acc | Prec | Rec | F1 | AUC |\n|---|---|---|---|---|---|")
+    for k in ("at_0.5", "at_tuned_threshold"):
+        m = res[k]
+        print(f"| {k} | {m['accuracy']:.3f} | {m['precision']:.3f} | {m['recall']:.3f} | "
+              f"{m['f1']:.3f} | {m['auc']:.3f} |")
+    print("confusion matrix (tuned):", res["at_tuned_threshold"]["confusion_matrix"])
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    fpr, tpr, _ = roc_curve(yt, pt)
+    plt.figure(); plt.plot(fpr, tpr); plt.plot([0, 1], [0, 1], "--")
+    plt.xlabel("False positive rate"); plt.ylabel("True positive rate")
+    plt.title(f"ROC (AUC={res['at_0.5']['auc']:.3f})")
+    plt.savefig(os.path.join(a.out, "roc_curve.png"), dpi=150); plt.close()
+    cm = np.array(res["at_tuned_threshold"]["confusion_matrix"])
+    plt.figure(); plt.imshow(cm, cmap="Blues")
+    for (i, j), v in np.ndenumerate(cm):
+        plt.text(j, i, v, ha="center", va="center")
     plt.xticks([0, 1], ["Real", "Fake"]); plt.yticks([0, 1], ["Real", "Fake"])
-    plt.xlabel("Predicted"); plt.ylabel("Actual"); plt.title("Confusion matrix"); plt.tight_layout()
-    plt.savefig(os.path.join(RESULTS_DIR, f"confusion_matrix_{a.name}.png"), dpi=150); plt.close()
-
-    fpr, tpr, _ = roc_curve(y_true, probs)
-    plt.figure(figsize=(4, 4)); plt.plot(fpr, tpr, label=f"AUC = {m['auc']:.3f}")
-    plt.plot([0, 1], [0, 1], "--", color="gray"); plt.xlabel("False positive rate")
-    plt.ylabel("True positive rate"); plt.legend(); plt.title("ROC curve"); plt.tight_layout()
-    plt.savefig(os.path.join(RESULTS_DIR, f"roc_curve_{a.name}.png"), dpi=150); plt.close()
-
-    print(json.dumps(m, indent=2))
+    plt.xlabel("Predicted"); plt.ylabel("Actual")
+    plt.savefig(os.path.join(a.out, "confusion_matrix.png"), dpi=150); plt.close()
 
 
 if __name__ == "__main__":

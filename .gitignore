@@ -6,6 +6,9 @@ venv/
 # large files - do not push to GitHub
 data/*
 !data/README.md
-models/*
-!models/.gitkeep
+outputs/*
+!outputs/README.md
+CASIA*/
+*.keras
+*.h5
 *.zip

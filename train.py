@@ -1,63 +1,76 @@
+"""Two-stage training: (1) frozen backbone, (2) fine-tune the top of ResNet50.
+
+Example:
+    python train.py --data_root /content/CASIA2 --out outputs
+    python train.py --data_root /content/CASIA2 --out outputs --group_split
+"""
 import argparse
 import os
 
 import numpy as np
-from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
-from tensorflow.keras.metrics import AUC
-from tensorflow.keras.optimizers import Adam
+import tensorflow as tf
 
-from config import MODEL_PATH
-from src.data import ImageSequence, list_split
-from src.model import build_model
-
-
-def callbacks():
-    return [EarlyStopping(monitor="val_auc", mode="max", patience=4, restore_best_weights=True),
-            ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=2, verbose=1)]
-
-
-def compile_model(model, lr):
-    model.compile(optimizer=Adam(lr), loss="binary_crossentropy",
-                  metrics=["accuracy", AUC(name="auc")])
+import config
+import data
+import model as M
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data-dir", default="data")
-    ap.add_argument("--epochs", type=int, default=15)
-    ap.add_argument("--fine-tune-epochs", type=int, default=10)
-    ap.add_argument("--batch-size", type=int, default=16)
-    ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--data_root", required=True)
+    ap.add_argument("--out", default="outputs")
+    ap.add_argument("--mode", default=config.MODE, choices=["paper", "multi_ela"])
+    ap.add_argument("--epochs_head", type=int, default=config.EPOCHS_HEAD)
+    ap.add_argument("--epochs_ft", type=int, default=config.EPOCHS_FINETUNE)
+    ap.add_argument("--unfreeze", type=int, default=config.UNFREEZE_LAST)
+    ap.add_argument("--group_split", action="store_true",
+                    help="keep tampered images and their source images in the same split")
     a = ap.parse_args()
 
-    tr_p, tr_y = list_split(os.path.join(a.data_dir, "train"))
-    va_p, va_y = list_split(os.path.join(a.data_dir, "val"))
-    train = ImageSequence(tr_p, tr_y, a.batch_size, shuffle=True, augment=True, workers=a.workers)
-    val = ImageSequence(va_p, va_y, a.batch_size, workers=a.workers)
+    tf.keras.utils.set_random_seed(config.SEED)
+    os.makedirs(a.out, exist_ok=True)
+    cache = os.path.join(a.out, "cache")
 
-    n_fake = int(np.sum(tr_y)); n_real = len(tr_y) - n_fake
-    class_weight = {0: len(tr_y) / (2 * n_real), 1: len(tr_y) / (2 * n_fake)}
-    print(f"train: {n_real} real / {n_fake} fake | class weights {class_weight}")
+    paths, labels = data.list_casia(a.data_root)
+    print(f"Found {len(paths)} images ({(labels == 0).sum()} authentic, {(labels == 1).sum()} tampered)")
+    splits = data.make_splits(paths, labels, group_split=a.group_split)
+    splits_fp = os.path.join(a.out, "splits.json")
+    data.save_splits(splits_fp, paths, labels, splits)
+    sp = data.load_splits(splits_fp)
 
-    model, base = build_model()
+    tr = data.ForgerySequence(*sp["train"], a.mode, cache, train=True)
+    va = data.ForgerySequence(*sp["val"], a.mode, cache, train=False)
 
-    print("\n== Stage 1: train LSTM + dense head (ResNet50 frozen) ==")
-    compile_model(model, 1e-4)
-    model.fit(train, validation_data=val, epochs=a.epochs,
-              class_weight=class_weight, callbacks=callbacks())
+    n0, n1 = (sp["train"][1] == 0).sum(), (sp["train"][1] == 1).sum()
+    n = n0 + n1
+    class_weight = {0: n / (2 * n0), 1: n / (2 * n1)}
+    print("class weights:", class_weight)
 
-    if a.fine_tune_epochs > 0:
-        print("\n== Stage 2: fine-tune last 30 ResNet50 layers ==")
-        base.trainable = True
-        for layer in base.layers[:-30]:
-            layer.trainable = False
-        compile_model(model, 1e-5)
-        model.fit(train, validation_data=val, epochs=a.fine_tune_epochs,
-                  class_weight=class_weight, callbacks=callbacks())
+    model_fp = os.path.join(a.out, "model.keras")
+    callbacks = lambda: [
+        tf.keras.callbacks.ModelCheckpoint(model_fp, monitor="val_auc", mode="max", save_best_only=True),
+        tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=2, min_lr=1e-7),
+        tf.keras.callbacks.EarlyStopping(monitor="val_auc", mode="max", patience=6,
+                                         restore_best_weights=True),
+        tf.keras.callbacks.CSVLogger(os.path.join(a.out, "training_log.csv"), append=True),
+    ]
 
-    os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
-    model.save(MODEL_PATH)
-    print(f"\nModel saved to {MODEL_PATH}")
+    model = M.build_model()
+    print("== Stage 1: training head (ResNet50 frozen) ==")
+    M.compile_model(model, config.LR_HEAD)
+    model.fit(tr, validation_data=va, epochs=a.epochs_head, class_weight=class_weight,
+              callbacks=callbacks())
+
+    print(f"== Stage 2: fine-tuning last {a.unfreeze} ResNet50 layers ==")
+    M.set_finetune(model, a.unfreeze)
+    M.compile_model(model, config.LR_FINETUNE)
+    model.fit(tr, validation_data=va, epochs=a.epochs_ft, class_weight=class_weight,
+              callbacks=callbacks())
+
+    model.save(model_fp)
+    with open(os.path.join(a.out, "mode.txt"), "w") as f:
+        f.write(a.mode)
+    print("Saved", model_fp)
 
 
 if __name__ == "__main__":

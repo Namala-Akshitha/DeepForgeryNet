@@ -1,26 +1,39 @@
-"""Flask web app: upload an image -> REAL or FAKE."""
+"""Flask web app: upload an image -> REAL or FAKE.
+
+    python app.py              # expects outputs/model.keras, threshold.json, mode.txt
+    python app.py --out outputs --port 5000
+"""
+import argparse
+import json
 import os
+import tempfile
 
 from flask import Flask, jsonify, render_template, request
-from PIL import UnidentifiedImageError
 
-from config import MODEL_PATH, THRESHOLD
-from src.preprocessing import preprocess
+import infer
 
+ALLOWED = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # 10 MB
-ALLOWED = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
-_model = None
+STATE = {"out": "outputs", "model": None, "threshold": 0.5, "mode": "multi_ela"}
 
 
 def get_model():
-    global _model
-    if _model is None:
-        if not os.path.exists(MODEL_PATH):
-            raise FileNotFoundError("Model not trained yet. Run `python train.py` first.")
-        from tensorflow.keras.models import load_model
-        _model = load_model(MODEL_PATH)
-    return _model
+    if STATE["model"] is None:
+        out = STATE["out"]
+        fp = os.path.join(out, "model.keras")
+        if not os.path.exists(fp):
+            raise FileNotFoundError(
+                "Model not found. Train it (python train.py) or put model.keras, "
+                f"threshold.json and mode.txt in '{out}/'.")
+        import tensorflow as tf
+        STATE["model"] = tf.keras.models.load_model(fp)
+        meta = os.path.join(out, "threshold.json")
+        if os.path.exists(meta):
+            with open(meta) as f:
+                m = json.load(f)
+            STATE["threshold"], STATE["mode"] = m["threshold"], m["mode"]
+    return STATE["model"]
 
 
 @app.route("/")
@@ -33,16 +46,20 @@ def predict():
     file = request.files.get("image")
     if file is None or file.filename == "":
         return jsonify(error="Please choose an image."), 400
-    if os.path.splitext(file.filename)[1].lower() not in ALLOWED:
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in ALLOWED:
         return jsonify(error="Unsupported file type. Upload JPG, PNG, BMP, WEBP or TIFF."), 400
     try:
-        x = preprocess(file.stream)[None, ...]
-        prob_fake = float(get_model().predict(x, verbose=0)[0][0])
+        model = get_model()
+        with tempfile.TemporaryDirectory() as d:
+            fp = os.path.join(d, "upload" + ext)
+            file.save(fp)
+            prob = infer.predict_path(model, fp, STATE["mode"])
     except FileNotFoundError as e:
         return jsonify(error=str(e)), 503
-    except UnidentifiedImageError:
+    except Exception:
         return jsonify(error="That file is not a valid image."), 400
-    return jsonify(label="FAKE" if prob_fake >= THRESHOLD else "REAL")
+    return jsonify(label="FAKE" if prob >= STATE["threshold"] else "REAL")
 
 
 @app.errorhandler(413)
@@ -51,4 +68,9 @@ def too_large(_):
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", default="outputs")
+    ap.add_argument("--port", type=int, default=5000)
+    a = ap.parse_args()
+    STATE["out"] = a.out
+    app.run(host="0.0.0.0", port=a.port, debug=False)
