@@ -63,8 +63,9 @@ python evaluate.py --out outputs
 Writes `results.json`, `threshold.json`, `roc_curve.png`, `confusion_matrix.png` in `outputs/`. The threshold is tuned on the validation set only.
 
 ## 4. Run the web app
+On first run the app downloads the trained model automatically from the GitHub Release (about 100+ MB). 
 Put `model.keras`, `threshold.json` and `mode.txt` in `outputs/`, then:
-```bash
+```bash  
 python app.py --out outputs
 ```
 Open http://127.0.0.1:5000, upload an image and click "Check image".

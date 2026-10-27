@@ -17,10 +17,27 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # 10 MB
 STATE = {"out": "outputs", "model": None, "threshold": 0.5, "mode": "multi_ela"}
 
+import urllib.request
+
+RELEASE_URL = "https://github.com/Namala-Akshitha/DeepForgeryNet/releases/download/v2/"
+
+
+def ensure_files(out):
+    os.makedirs(out, exist_ok=True)
+    for name in ("model.keras", "threshold.json", "mode.txt"):
+        fp = os.path.join(out, name)
+        if not os.path.exists(fp):
+            print(f"Downloading {name} ...")
+            try:
+                urllib.request.urlretrieve(RELEASE_URL + name, fp)
+            except Exception as e:
+                print("Download failed:", e)
+
 
 def get_model():
     if STATE["model"] is None:
         out = STATE["out"]
+        ensure_files(out)
         fp = os.path.join(out, "model.keras")
         if not os.path.exists(fp):
             raise FileNotFoundError(
