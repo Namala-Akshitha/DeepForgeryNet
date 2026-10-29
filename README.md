@@ -4,6 +4,15 @@ A student implementation of **DeepForgeryNet** (Sardhara et al., 2026): a hybrid
 
 **Team:** N. Akshitha, Y. Manasa, B. Soumya, L. Navyasri, G. Harini
 
+
+## See the accuracy (quick start)
+
+After cloning, run this first. It needs no model, dataset or TensorFlow:
+
+    python show_results.py
+
+It prints the saved test results (accuracy 94.8%, precision 91.2%, recall 96.5%, F1 93.7%, AUC 0.989). To reproduce them, follow the Train and Evaluate steps below.
+
 ## How it works
 Input image -> forensic maps (multi-quality ELA at JPEG quality 95/90/75, computed at full resolution) -> ImageNet-pretrained ResNet50 (7x7x2048, last 60 layers fine-tuned) -> sequence of 49 regions -> LayerNorm -> Bidirectional LSTM (256) -> Dense (128) -> Dropout (0.5) -> Sigmoid -> Real / Fake
 
